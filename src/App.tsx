@@ -1,13 +1,14 @@
-import React, { useState, useEffect, createContext, useContext } from 'react'
+import { useState, useEffect, createContext, useContext } from 'react'
 import { HashRouter as Router, Routes, Route, Navigate } from 'react-router-dom'
 import Navigation from './components/Navigation'
 import Home from './components/Home'
-import Chat from './components/Chat'
+import Chat from './components/chat'
 import Assessment from './components/Assessment'
 import Quiz from './components/Quiz'
 import Poll from './components/Poll'
 import Discussion from './components/Discussion'
-import './assets/global.css'
+import './global.css'
+import { offlineApi } from './offlineApi'
 
 interface User {
   id: string
@@ -59,13 +60,21 @@ function App() {
   }
 
   const scanNearbyDevices = () => {
-    const mockDevices = [
-      { id: '1', name: 'Teacher-Desktop', signal: 95, type: 'computer' },
-      { id: '2', name: 'Student-Laptop-1', signal: 87, type: 'laptop' },
-      { id: '3', name: 'Student-Laptop-2', signal: 76, type: 'laptop' },
-      { id: '4', name: 'Lab-PC-5', signal: 62, type: 'computer' }
-    ]
-    setDeviceInfo(prev => ({ ...prev, nearbyDevices: mockDevices }))
+    offlineApi.scanPeers()
+      .then((peers) => {
+        setDeviceInfo(prev => ({
+          ...prev,
+          nearbyDevices: peers.map((peer, index) => ({
+            id: peer.id,
+            name: peer.displayName,
+            signal: Math.max(45, 95 - index * 8),
+            type: 'desktop'
+          }))
+        }))
+      })
+      .catch((error) => {
+        console.error('Failed to scan peers:', error)
+      })
   }
 
   useEffect(() => {
@@ -78,6 +87,23 @@ function App() {
       avatar: '👨‍🏫',
       deviceId: 'device-1'
     })
+  }, [])
+
+  useEffect(() => {
+    offlineApi.getProfile()
+      .then((profile) => {
+        if (!profile) return
+        setCurrentUser({
+          id: profile.peerId,
+          name: profile.displayName,
+          role: 'teacher',
+          avatar: 'TD',
+          deviceId: profile.peerId
+        })
+      })
+      .catch((error) => {
+        console.error('Failed to load local profile:', error)
+      })
   }, [])
 
   return (

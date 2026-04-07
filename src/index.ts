@@ -3,10 +3,12 @@ import { join } from 'path'
 import { fileURLToPath } from 'url'
 import os from 'os'
 import fs from 'fs'
+import { OfflineBackendService } from '../backend/service'
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url))
 
 let mainWindow: BrowserWindow | null = null
+let backendService: OfflineBackendService | null = null
 let cpuUsageHistory: number[] = []
 let lastCpuTimes = process.cpuUsage()
 let lastCpuTime = Date.now()
@@ -359,7 +361,9 @@ function getProcessList(totalMem: number) {
   return processes
 }
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
+  backendService = new OfflineBackendService()
+  await backendService.start()
   createWindow()
 
   // ==================== SYSTEM INFORMATION HANDLERS ====================
@@ -511,12 +515,44 @@ app.whenReady().then(() => {
   
   // New handler for network interfaces
   ipcMain.handle('get-network-interfaces', () => os.networkInterfaces())
+
+  // ==================== OFFLINE BACKEND HANDLERS ====================
+
+  ipcMain.handle('offline:get-status', () => backendService?.getStatus() ?? null)
+  ipcMain.handle('offline:get-profile', () => backendService?.getProfile() ?? null)
+  ipcMain.handle('offline:scan-peers', () => backendService?.scanPeers() ?? [])
+  ipcMain.handle('offline:list-peers', () => backendService?.listPeers() ?? [])
+  ipcMain.handle('offline:list-conversations', () => backendService?.listConversations() ?? [])
+  ipcMain.handle('offline:get-messages', (_event, conversationId: string) => {
+    return backendService?.getMessages(conversationId) ?? []
+  })
+  ipcMain.handle('offline:send-message', async (_event, peerId: string, content: string) => {
+    if (!backendService) throw new Error('Offline backend is not running.')
+    return await backendService.sendLanMessage(peerId, content)
+  })
+  ipcMain.handle('offline:list-assessments', () => backendService?.listAssessments() ?? [])
+  ipcMain.handle('offline:create-assessment', async (_event, payload) => {
+    if (!backendService) throw new Error('Offline backend is not running.')
+    return await backendService.createAssessment(payload)
+  })
+  ipcMain.handle('offline:submit-assessment', async (_event, payload) => {
+    if (!backendService) throw new Error('Offline backend is not running.')
+    return await backendService.submitAssessment(payload)
+  })
+  ipcMain.handle('offline:list-submissions', (_event, assessmentId: string) => {
+    return backendService?.listSubmissions(assessmentId) ?? []
+  })
+  ipcMain.handle('offline:list-ledger', () => backendService?.listLedger() ?? [])
 })
 
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') {
     app.quit()
   }
+})
+
+app.on('before-quit', async () => {
+  await backendService?.stop()
 })
 
 app.on('activate', () => {

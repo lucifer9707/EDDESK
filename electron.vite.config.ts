@@ -8,9 +8,9 @@ export default defineConfig({
     build: {
       outDir: 'dist/main',
       rollupOptions: {
-        external: ['electron', 'fs', 'os', 'path', 'util'],
+        external: ['electron', 'fs', 'os', 'path', 'util', 'sql.js'],
         input: {
-          index: resolve(__dirname, 'src/main/index.ts')
+          index: resolve(__dirname, 'src/index.ts')
         }
       }
     }
@@ -22,18 +22,19 @@ export default defineConfig({
       rollupOptions: {
         external: ['electron'],
         input: {
-          index: resolve(__dirname, 'src/preload/index.ts')
+          index: resolve(__dirname, 'src/preload.ts')
         }
       }
     }
   },
   renderer: {
+    root: 'src',
     plugins: [react()],
     build: {
       outDir: 'dist/renderer',
       rollupOptions: {
         input: {
-          index: resolve(__dirname, 'src/renderer/index.html')
+          index: resolve(__dirname, 'src/index.html')
         }
       }
     }
