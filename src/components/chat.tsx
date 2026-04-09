@@ -264,6 +264,7 @@ export default function Chat() {
   }, [buildMessageSignature])
 
   useEffect(() => {
+    if (!currentSession) return
     saveActiveSession(currentSession)
   }, [currentSession])
 
@@ -412,6 +413,154 @@ export default function Chat() {
     }
   }, [addLog, syncMessages])
 
+  const mapRecordsToMessages = useCallback((
+    records: ChatMessageRecord[],
+    prof: { peerId: string; displayName: string } | null
+  ): Message[] => records.map(r => ({
+    id: r.id,
+    sender: r.direction === 'outgoing' ? (prof?.displayName ?? 'You') : r.peerName,
+    role: inferRole(r.direction === 'outgoing' ? (prof?.displayName ?? '') : r.peerName),
+    content: r.content,
+    timestamp: new Date(r.createdAt),
+    isOwn: r.direction === 'outgoing',
+    encrypted: true,
+    delivered: r.status !== 'pending',
+    read: r.status === 'delivered'
+  })), [])
+
+  const refreshCurrentSession = useCallback(async (session: Session) => {
+    const snap = await loadSnapshot(false, false)
+    if (!snap) return
+
+    const currentPeer = snap.peers.find(p => p.id === session.peerId)
+    const sessionStatus = session.mode === 'peer' ? (currentPeer?.status ?? session.status) : 'online'
+    const systemMsg: Message = {
+      id: `sys-${session.peerId}`,
+      sender: 'System',
+      role: 'system',
+      content: `BACKEND · ${snap.status?.localAddress ?? '127.0.0.1'}:${snap.status?.serverPort ?? 0} · WIFI LINK ${sessionStatus.toUpperCase()}`,
+      timestamp: new Date(),
+      isOwn: false,
+      system: true
+    }
+
+    if (session.mode === 'host') {
+      const hosted = await offlineApi.getHostedSession().catch(() => null)
+      if (!hosted) return
+
+      const updatedSession = buildHostSession(hosted, snap.profile, snap.status)
+      setCurrentSession(updatedSession)
+
+      const nextParticipants: Participant[] = [
+        {
+          id: snap.profile?.peerId ?? 'local',
+          name: snap.profile?.displayName ?? 'You',
+          role: 'student',
+          status: 'online',
+          joinedAt: updatedSession.created,
+          device: 'This Device',
+          ipAddress: snap.status?.localAddress ?? '127.0.0.1',
+          messagesSent: 0
+        }
+      ]
+
+      const allRecords: ChatMessageRecord[] = []
+      for (const pid of hosted.participantPeerIds) {
+        const peer = snap.peers.find(p => p.id === pid)
+        if (!peer) continue
+
+        nextParticipants.push({
+          id: pid,
+          name: peer.displayName,
+          role: inferRole(peer.displayName),
+          status: peer.status === 'online' ? 'online' : 'away',
+          joinedAt: new Date(hosted.updatedAt),
+          device: peer.displayName,
+          ipAddress: peer.address,
+          messagesSent: 0
+        })
+
+        const conv = findConversationForSession(snap.convs, pid, session.code)
+        if (!conv) continue
+        const records = await offlineApi.getMessages(conv.id).catch(() => [] as ChatMessageRecord[])
+        allRecords.push(...records)
+      }
+
+      allRecords.sort((a, b) => a.createdAt - b.createdAt)
+      const mapped = mapRecordsToMessages(allRecords, snap.profile)
+      syncMessages([
+        systemMsg,
+        {
+          id: `host-code-${updatedSession.code}`,
+          sender: 'System',
+          role: 'system',
+          content: `SESSION CREATED · CODE: ${updatedSession.code} · Share this code with your friend. They can also scan your device on the same LAN.`,
+          timestamp: new Date(updatedSession.created),
+          isOwn: false,
+          system: true
+        },
+        ...mapped
+      ])
+      setParticipants(nextParticipants)
+      setPacketCount(allRecords.length)
+      setRxBytes(allRecords.filter(r => r.direction === 'incoming').reduce((s, r) => s + r.content.length * 2, 0))
+      setTxBytes(allRecords.filter(r => r.direction === 'outgoing').reduce((s, r) => s + r.content.length * 2, 0))
+      return
+    }
+
+    const conversationId = findConversationForSession(snap.convs, session.peerId, session.code)?.id ?? session.conversationId
+    const updatedSession: Session = {
+      ...session,
+      status: sessionStatus,
+      conversationId
+    }
+    setCurrentSession(updatedSession)
+    setParticipants([
+      {
+        id: snap.profile?.peerId ?? 'local',
+        name: snap.profile?.displayName ?? 'You',
+        role: 'student',
+        status: 'online',
+        joinedAt: new Date(),
+        device: 'This Device',
+        ipAddress: snap.status?.localAddress ?? '127.0.0.1',
+        messagesSent: 0
+      },
+      {
+        id: session.peerId,
+        name: currentPeer?.displayName ?? session.name.replace(/^Chat · /, ''),
+        role: inferRole(currentPeer?.displayName ?? session.name),
+        status: sessionStatus === 'online' ? 'online' : 'away',
+        joinedAt: session.created,
+        device: currentPeer?.displayName ?? session.name.replace(/^Chat · /, ''),
+        ipAddress: currentPeer?.address ?? session.address,
+        messagesSent: 0
+      }
+    ])
+
+    if (!conversationId) {
+      syncMessages([systemMsg, {
+        id: `empty-${session.peerId}`,
+        sender: 'System',
+        role: 'system',
+        content: `CONNECTED TO ${session.name.toUpperCase()} · Send a message to start`,
+        timestamp: new Date(),
+        isOwn: false,
+        system: true
+      }])
+      setPacketCount(0)
+      setRxBytes(0)
+      setTxBytes(0)
+      return
+    }
+
+    const records = await offlineApi.getMessages(conversationId).catch(() => [] as ChatMessageRecord[])
+    syncMessages([systemMsg, ...mapRecordsToMessages(records, snap.profile)])
+    setPacketCount(records.length)
+    setRxBytes(records.filter(r => r.direction === 'incoming').reduce((s, r) => s + r.content.length * 2, 0))
+    setTxBytes(records.filter(r => r.direction === 'outgoing').reduce((s, r) => s + r.content.length * 2, 0))
+  }, [loadSnapshot, mapRecordsToMessages, syncMessages])
+
   // --- Open session ---
   const openSession = useCallback(async (session: Session) => {
     setCurrentSession(session)
@@ -538,7 +687,7 @@ export default function Chat() {
   useEffect(() => {
     if (!currentSession) return
     const interval = setInterval(async () => {
-      if (document.hidden || isPollingRef.current) return
+      if (isPollingRef.current) return
       isPollingRef.current = true
       const sess = currentSessionRef.current
       if (!sess) {
@@ -547,121 +696,13 @@ export default function Chat() {
       }
 
       try {
-        const snap = await loadSnapshot(false, false)
-        if (!snap) return
-
-        // For host: check if participants joined
-        if (sess.mode === 'host' && sess.backendSessionId) {
-          const hosted = await offlineApi.getHostedSession().catch(() => null)
-          if (hosted && hosted.participantPeerIds.length > 0) {
-            const updatedSession = { ...sess, participants: 1 + hosted.participantPeerIds.length }
-            setCurrentSession(updatedSession)
-
-            // Build participants list
-            const newParticipants: Participant[] = [
-              {
-                id: snap.profile?.peerId ?? 'local',
-                name: snap.profile?.displayName ?? 'You',
-                role: 'student',
-                status: 'online',
-                joinedAt: updatedSession.created,
-                device: 'This Device',
-                ipAddress: snap.status?.localAddress ?? '127.0.0.1',
-                messagesSent: 0
-              }
-            ]
-            for (const pid of hosted.participantPeerIds) {
-              const peer = snap.peers.find(p => p.id === pid)
-              if (peer) {
-                const conv = findConversationForSession(snap.convs, pid, sess.code)
-                newParticipants.push({
-                  id: pid,
-                  name: peer.displayName,
-                  role: inferRole(peer.displayName),
-                  status: peer.status === 'online' ? 'online' : 'away',
-                  joinedAt: new Date(hosted.updatedAt),
-                  device: peer.displayName,
-                  ipAddress: peer.address,
-                  messagesSent: 0
-                })
-                if (conv) {
-                  const records = await offlineApi.getMessages(conv.id).catch(() => [] as ChatMessageRecord[])
-                  if (records.length > 0) {
-                    const systemMsg: Message = {
-                      id: `sys-${sess.peerId}`,
-                      sender: 'System',
-                      role: 'system',
-                      content: `${peer.displayName} joined your session`,
-                      timestamp: new Date(),
-                      isOwn: false,
-                      system: true
-                    }
-                    const mapped: Message[] = records.map(r => ({
-                      id: r.id,
-                      sender: r.direction === 'outgoing' ? (snap.profile?.displayName ?? 'You') : r.peerName,
-                      role: inferRole(r.direction === 'outgoing' ? (snap.profile?.displayName ?? '') : r.peerName),
-                      content: r.content,
-                      timestamp: new Date(r.createdAt),
-                      isOwn: r.direction === 'outgoing',
-                      encrypted: true,
-                      delivered: r.status !== 'pending',
-                      read: r.status === 'delivered'
-                    }))
-                    setMessages(prev => {
-                      const existingIds = new Set(prev.map(m => m.id))
-                      const newMsgs = [systemMsg, ...mapped].filter(m => !existingIds.has(m.id))
-                      const next = newMsgs.length > 0 ? [...prev.filter(m => !m.system || m.id === `sys-${sess.peerId}`), ...newMsgs] : prev
-                      latestMessageSignatureRef.current = buildMessageSignature(next)
-                      return next
-                    })
-                    setPacketCount(records.length)
-                  }
-                }
-              }
-            }
-            setParticipants(newParticipants)
-          }
-          return
-        }
-
-        // For peer: poll messages
-        if (sess.mode === 'peer' && sess.conversationId) {
-          try {
-            const records = await offlineApi.getMessages(sess.conversationId)
-            const systemMsg: Message = {
-              id: `sys-${sess.peerId}`,
-              sender: 'System',
-              role: 'system',
-              content: `BACKEND · ${snap.status?.localAddress ?? '127.0.0.1'}:${snap.status?.serverPort ?? 0} · WIFI LINK ${sess.status.toUpperCase()}`,
-              timestamp: new Date(),
-              isOwn: false,
-              system: true
-            }
-            const mapped: Message[] = records.map(r => ({
-              id: r.id,
-              sender: r.direction === 'outgoing' ? (snap.profile?.displayName ?? 'You') : r.peerName,
-              role: inferRole(r.direction === 'outgoing' ? (snap.profile?.displayName ?? '') : r.peerName),
-              content: r.content,
-              timestamp: new Date(r.createdAt),
-              isOwn: r.direction === 'outgoing',
-              encrypted: true,
-              delivered: r.status !== 'pending',
-              read: r.status === 'delivered'
-            }))
-            syncMessages([systemMsg, ...mapped])
-            setPacketCount(records.length)
-            setRxBytes(records.filter(r => r.direction === 'incoming').reduce((s, r) => s + r.content.length * 2, 0))
-            setTxBytes(records.filter(r => r.direction === 'outgoing').reduce((s, r) => s + r.content.length * 2, 0))
-          } catch (e) {
-            // silently ignore poll errors
-          }
-        }
+        await refreshCurrentSession(sess)
       } finally {
         isPollingRef.current = false
       }
-    }, 5000)
+    }, 1000)
     return () => clearInterval(interval)
-  }, [buildMessageSignature, currentSession, loadSnapshot, syncMessages])
+  }, [currentSession, refreshCurrentSession])
 
   // --- Scan ---
   const scanForSessions = useCallback(async () => {
@@ -874,6 +915,7 @@ export default function Chat() {
       } catch (e) {
         showError(`Send failed: ${getErrorMessage(e)}`)
       } finally {
+        await refreshCurrentSession(currentSession).catch(() => undefined)
         setIsSending(false)
         inputRef.current?.focus()
       }
@@ -909,10 +951,11 @@ export default function Chat() {
       showError(`Send failed: ${getErrorMessage(e)}`)
       setMessages(prev => prev.map(m => m.id === optimisticId ? { ...m, delivered: false } : m))
     } finally {
+      await refreshCurrentSession(currentSession).catch(() => undefined)
       setIsSending(false)
       inputRef.current?.focus()
     }
-  }, [addLog, broadcastMode, currentSession, isSending, loadSnapshot, newMessage, peerRecords, profile, showError])
+  }, [addLog, broadcastMode, currentSession, isSending, loadSnapshot, newMessage, peerRecords, profile, refreshCurrentSession, showError])
 
   const handleKey = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); void sendMessage() }
