@@ -149,6 +149,7 @@ export const offlineApi = {
   closeHostedSession: () => window.electronAPI.offline.closeHostedSession() as Promise<void>,
   joinSessionByCode: (code: string, password?: string) => window.electronAPI.offline.joinSessionByCode(code, password) as Promise<SessionRecord>,
   listConversations: () => window.electronAPI.offline.listConversations() as Promise<ConversationRecord[]>,
+  deleteConversation: (conversationId: string) => window.electronAPI.offline.deleteConversation(conversationId) as Promise<void>,
   getMessages: (conversationId: string) => window.electronAPI.offline.getMessages(conversationId) as Promise<ChatMessageRecord[]>,
   sendMessage: (peerId: string, content: string, sessionCode?: string) => window.electronAPI.offline.sendMessage(peerId, content, sessionCode) as Promise<ChatMessageRecord>,
   listAssessments: () => window.electronAPI.offline.listAssessments() as Promise<AssessmentRecord[]>,

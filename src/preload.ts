@@ -25,6 +25,7 @@ const electronAPI = {
     closeHostedSession: () => ipcRenderer.invoke('offline:close-hosted-session'),
     joinSessionByCode: (code: string, password?: string) => ipcRenderer.invoke('offline:join-session', code, password),
     listConversations: () => ipcRenderer.invoke('offline:list-conversations'),
+    deleteConversation: (conversationId: string) => ipcRenderer.invoke('offline:delete-conversation', conversationId),
     getMessages: (conversationId: string) => ipcRenderer.invoke('offline:get-messages', conversationId),
     sendMessage: (peerId: string, content: string, sessionCode?: string) => ipcRenderer.invoke('offline:send-message', peerId, content, sessionCode),
     listAssessments: () => ipcRenderer.invoke('offline:list-assessments'),

@@ -56,6 +56,7 @@ interface JoinSessionPayload {
 
 export class OfflineBackendService {
   private readonly discoveryPort = 41235
+  private readonly preferredServerPorts = [41236, 41237, 41238, 41239, 41240]
   private readonly database: BackendDatabase
   private readonly peerId: string
   private readonly displayName: string
@@ -148,20 +149,41 @@ export class OfflineBackendService {
       }
     })
 
-    await new Promise<void>((resolve, reject) => {
-      this.server?.listen(0, '0.0.0.0', () => {
-        const addressInfo = this.server?.address()
-        if (!addressInfo || typeof addressInfo === 'string') {
-          reject(new Error('Unable to bind local backend server'))
-          return
-        }
+    await this.listenOnPreferredPort()
+  }
 
-        this.serverPort = addressInfo.port
-        this.localAddress = this.getLocalIpAddress()
-        resolve()
-      })
-      this.server?.on('error', reject)
-    })
+  private async listenOnPreferredPort(): Promise<void> {
+    let lastError: unknown = null
+
+    for (const port of this.preferredServerPorts) {
+      try {
+        await new Promise<void>((resolve, reject) => {
+          const onError = (error: Error) => {
+            this.server?.off('error', onError)
+            reject(error)
+          }
+
+          this.server?.once('error', onError)
+          this.server?.listen(port, '0.0.0.0', () => {
+            this.server?.off('error', onError)
+            const addressInfo = this.server?.address()
+            if (!addressInfo || typeof addressInfo === 'string') {
+              reject(new Error('Unable to bind local backend server'))
+              return
+            }
+
+            this.serverPort = addressInfo.port
+            this.localAddress = this.getLocalIpAddress()
+            resolve()
+          })
+        })
+        return
+      } catch (error) {
+        lastError = error
+      }
+    }
+
+    throw lastError instanceof Error ? lastError : new Error('Unable to bind LAN backend server')
   }
 
   private async startDiscovery(): Promise<void> {
@@ -331,7 +353,8 @@ export class OfflineBackendService {
       await new Promise((resolve) => setTimeout(resolve, 350))
     }
 
-    return this.listPeers().find((item) => item.status === 'online' && item.hostedSession?.code === code) ?? null
+    return this.listPeers().find((item) => item.status === 'online' && item.hostedSession?.code === code)
+      ?? await this.probeLanForSession(code)
   }
 
   private async readJson<T>(request: IncomingMessage): Promise<T> {
@@ -382,6 +405,35 @@ export class OfflineBackendService {
     })
   }
 
+  private async getJson<T>(host: string, port: number, path: string): Promise<T> {
+    return await new Promise<T>((resolve, reject) => {
+      const request = http.request(
+        {
+          host,
+          port,
+          path,
+          method: 'GET',
+          timeout: 1200
+        },
+        async (response) => {
+          const chunks: Buffer[] = []
+          for await (const chunk of response) {
+            chunks.push(Buffer.from(chunk))
+          }
+          const raw = Buffer.concat(chunks).toString()
+          if (response.statusCode && response.statusCode >= 400) {
+            reject(new Error(`Request failed with status ${response.statusCode}`))
+            return
+          }
+          resolve(JSON.parse(raw) as T)
+        }
+      )
+
+      request.on('error', reject)
+      request.end()
+    })
+  }
+
   private getLocalIpAddress(): string {
     const interfaces = os.networkInterfaces()
     for (const addrs of Object.values(interfaces)) {
@@ -398,6 +450,55 @@ export class OfflineBackendService {
   private normalizeRemoteAddress(address?: string | null): string {
     if (!address) return ''
     return address.startsWith('::ffff:') ? address.slice(7) : address
+  }
+
+  private listLanCandidates(): string[] {
+    const candidates = new Set<string>()
+    const localParts = this.localAddress.split('.')
+    if (localParts.length === 4) {
+      const prefix = localParts.slice(0, 3).join('.')
+      for (let i = 1; i < 255; i += 1) {
+        const candidate = `${prefix}.${i}`
+        if (candidate !== this.localAddress) candidates.add(candidate)
+      }
+    }
+
+    for (const peer of this.listPeers()) {
+      if (peer.address && peer.address !== this.localAddress) {
+        candidates.add(peer.address)
+      }
+    }
+
+    return [...candidates]
+  }
+
+  private async probeLanForSession(code: string): Promise<PeerRecord | null> {
+    for (const host of this.listLanCandidates()) {
+      for (const port of this.preferredServerPorts) {
+        try {
+          const status = await this.getJson<BackendStatus>(host, port, '/api/status')
+          if (status.peerId === this.peerId || status.activeHostedSession?.code !== code) continue
+
+          const peer: PeerRecord = {
+            id: status.peerId,
+            displayName: status.displayName,
+            address: host,
+            port: status.serverPort,
+            status: 'online',
+            transport: 'wifi',
+            capabilities: ['chat', 'assessment', 'ledger'],
+            lastSeen: Date.now(),
+            hostedSession: status.activeHostedSession
+          }
+          this.database.upsertPeer(peer)
+          return peer
+        } catch {
+          // Ignore unreachable candidates during LAN fallback probing.
+        }
+      }
+    }
+
+    return null
   }
 
   private upsertPeerConnection(
@@ -632,6 +733,10 @@ export class OfflineBackendService {
 
   listConversations(): ConversationRecord[] {
     return this.database.listConversations()
+  }
+
+  deleteConversation(conversationId: string): void {
+    this.database.deleteConversation(conversationId)
   }
 
   getMessages(conversationId: string): ChatMessageRecord[] {

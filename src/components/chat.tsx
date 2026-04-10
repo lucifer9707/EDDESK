@@ -66,6 +66,12 @@ interface NetworkNode {
   status: 'connected' | 'connecting' | 'lost'
 }
 
+interface HistoryEntry {
+  session: Session
+  lastMessage: string
+  unreadCount: number
+}
+
 const ACTIVE_CHAT_STORAGE_KEY = 'eddesk-active-chat-session'
 const IMAGE_MAX_BYTES = 2 * 1024 * 1024 // 2MB limit for inline images
 
@@ -138,6 +144,43 @@ const findBestConversationForSession = (
 }
 
 const isPeerSessionVisible = (peer: PeerRecord) => peer.status === 'online' && Boolean(peer.hostedSession)
+
+const buildHistorySession = (
+  conversation: ConversationRecord,
+  peer: PeerRecord | undefined,
+  profileName: string
+): Session => ({
+  code: conversation.sessionCode ?? peer?.hostedSession?.code ?? conversation.peerId.slice(-6).toUpperCase(),
+  peerId: conversation.peerId,
+  name: peer?.hostedSession?.name?.trim() || `Chat with ${conversation.peerName}`,
+  peerDisplayName: peer?.displayName ?? conversation.peerName,
+  mode: 'peer',
+  participants: 2,
+  encrypted: peer?.hostedSession?.visibility === 'private',
+  created: new Date(conversation.updatedAt),
+  description: peer?.hostedSession?.description || `Previous chat with ${conversation.peerName}`,
+  activeUsers: [profileName, peer?.displayName ?? conversation.peerName],
+  messageCount: conversation.unreadCount,
+  lastActivity: new Date(conversation.updatedAt),
+  address: peer?.address ?? '',
+  transport: 'wifi',
+  status: peer?.status === 'online' ? 'online' : 'stale',
+  conversationId: conversation.id,
+  backendSessionId: null
+})
+
+const buildHistoryEntries = (
+  conversations: ConversationRecord[],
+  peers: PeerRecord[],
+  profileName: string
+): HistoryEntry[] => conversations.map((conversation) => {
+  const peer = peers.find((item) => item.id === conversation.peerId)
+  return {
+    session: buildHistorySession(conversation, peer, profileName),
+    lastMessage: conversation.lastMessage,
+    unreadCount: conversation.unreadCount
+  }
+})
 
 const saveActiveSession = (session: Session | null) => {
   if (typeof window === 'undefined') return
@@ -249,6 +292,7 @@ export default function Chat() {
   const [permPrompt, setPermPrompt] = useState(false)
   const [kickConfirm, setKickConfirm] = useState<Participant | null>(null)
   const [activeSessions, setActiveSessions] = useState<Session[]>([])
+  const [historyEntries, setHistoryEntries] = useState<HistoryEntry[]>([])
 
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const messagesContainerRef = useRef<HTMLDivElement>(null)
@@ -362,6 +406,7 @@ export default function Chat() {
       const sessions = peers
         .filter(isPeerSessionVisible)
         .map(p => buildPeerSession(p, findBestConversationForSession(convs, p.id, p.hostedSession?.code), profileData?.displayName ?? 'You'))
+      const history = buildHistoryEntries(convs, peers, profileData?.displayName ?? 'You')
 
       if (applyState) {
         setBackendStatus(status)
@@ -369,6 +414,7 @@ export default function Chat() {
         setPeerRecords(peers)
         setNearbySessions(sessions)
         setActiveSessions(sessions)
+        setHistoryEntries(history)
         setNetworkNodes([
           { id: status?.peerId ?? 'local', name: 'Local Backend', latency: 1, status: 'connected' },
           ...peers.slice(0, 5).map((p, i) => ({
@@ -895,6 +941,24 @@ export default function Chat() {
     e.target.value = ''
   }, [showError])
 
+  const deleteHistoryEntry = useCallback(async (entry: HistoryEntry) => {
+    try {
+      await offlineApi.deleteConversation(entry.session.conversationId ?? '')
+      if (currentSession?.conversationId === entry.session.conversationId) {
+        setCurrentSession(null)
+        setMessages([])
+        setParticipants([])
+        saveActiveSession(null)
+        navigate('/chat', { replace: true })
+      }
+      const snap = await loadSnapshot(false)
+      if (!snap) return
+      addLog(`Deleted chat history · ${entry.session.peerDisplayName}`)
+    } catch (e) {
+      showError(`Delete failed: ${getErrorMessage(e)}`)
+    }
+  }, [addLog, currentSession?.conversationId, loadSnapshot, navigate, showError])
+
   // ── Send message (text or image) ──
   const sendMessage = useCallback(async () => {
     if ((!newMessage.trim() && !pendingImage) || !currentSession || isSending) return
@@ -979,6 +1043,8 @@ export default function Chat() {
     if (filter === 'student') return m.role === 'student' || m.system
     return true
   }), [filter, messages])
+
+  const isReadOnlySession = currentSession?.mode === 'peer' && currentSession.status !== 'online'
 
   // ==================== RENDER ====================
   return (
@@ -1142,21 +1208,39 @@ export default function Chat() {
             <div className="no-sess-icon">⬡</div>
             <p>No active session</p>
             <p className="hint">Create or scan to join</p>
-
-            {/* Show active sessions from network */}
-            {activeSessions.length > 0 && (
-              <div className="active-sess-list">
-                <div className="sp-title" style={{ margin: '12px 0 6px' }}>ACTIVE ON LAN</div>
-                {activeSessions.map(sess => (
-                  <div key={sess.code} className="active-sess-item" onClick={() => joinByCode(sess.code)}>
-                    <div className="asi-name">{sess.name}</div>
-                    <div className="asi-code">{sess.code}</div>
-                  </div>
-                ))}
-              </div>
-            )}
           </div>
         )}
+
+        <div className="history-panel">
+          <div className="sp-title">CHAT HISTORY</div>
+          {historyEntries.length > 0 ? (
+            <div className="history-list">
+              {historyEntries.map((entry) => (
+                <div
+                  key={entry.session.conversationId ?? `${entry.session.peerId}-${entry.session.code}`}
+                  className={`history-item ${currentSession?.conversationId === entry.session.conversationId ? 'history-item-active' : ''}`}
+                >
+                  <button className="history-open" onClick={() => void openSession(entry.session)}>
+                    <div className="history-top">
+                      <span className="history-name">{entry.session.peerDisplayName}</span>
+                      <span className={`history-state ${entry.session.status === 'online' ? 'history-live' : 'history-stale'}`}>
+                        {entry.session.status === 'online' ? 'LIVE' : 'READ ONLY'}
+                      </span>
+                    </div>
+                    <div className="history-code">{entry.session.code}</div>
+                    <div className="history-preview">{entry.lastMessage || 'No messages yet'}</div>
+                    {entry.unreadCount > 0 && <div className="history-unread">{entry.unreadCount} unread</div>}
+                  </button>
+                  <button className="history-delete" title="Delete chat history" onClick={() => void deleteHistoryEntry(entry)}>
+                    DEL
+                  </button>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="history-empty">No saved chats yet</div>
+          )}
+        </div>
 
         <div className="qa">
           <div className="qa-title">QUICK ACTIONS</div>
@@ -1224,6 +1308,12 @@ export default function Chat() {
 
             {selectedTab === 'messages' && (
               <div className="msgs" ref={messagesContainerRef} onScroll={handleMessagesScroll}>
+                {isReadOnlySession && (
+                  <div className="msg-sys">
+                    <span className="sys-pipe">|</span>
+                    <span>HISTORY MODE · This old chat is visible here, but sending is disabled.</span>
+                  </div>
+                )}
                 {filteredMessages.map(msg => (
                   <div key={msg.id} className={`mw ${msg.isOwn ? 'mw-own' : ''} ${msg.system ? 'mw-sys' : ''}`}>
                     {msg.system ? (
@@ -1334,6 +1424,9 @@ export default function Chat() {
 
             {selectedTab === 'messages' && (
               <div className="inp-area">
+                {isReadOnlySession && (
+                  <div className="bcast-banner">READ ONLY HISTORY · You can see old chat messages here but cannot type.</div>
+                )}
                 {broadcastMode && (
                   <div className="bcast-banner">BROADCAST MODE · Message will be sent to all available peers</div>
                 )}
@@ -1353,7 +1446,9 @@ export default function Chat() {
                     ref={inputRef}
                     className="msg-inp"
                     placeholder={
-                      currentSession.mode === 'host' && participants.length <= 1
+                      isReadOnlySession
+                        ? 'History only - sending disabled'
+                        : currentSession.mode === 'host' && participants.length <= 1
                         ? `Waiting for friend to join (code: ${currentSession.code})...`
                         : broadcastMode ? 'Broadcast message...'
                         : currentSession.mode === 'peer' ? `Message ${currentSession.peerDisplayName}...`
@@ -1362,7 +1457,7 @@ export default function Chat() {
                     value={newMessage}
                     onChange={e => setNewMessage(e.target.value)}
                     onKeyDown={handleKey}
-                    disabled={isSending}
+                    disabled={isSending || isReadOnlySession}
                   />
                   <span className="inp-cnt">{newMessage.length}</span>
 
@@ -1371,7 +1466,7 @@ export default function Chat() {
                     className="btn-attach"
                     title="Attach image"
                     onClick={() => fileInputRef.current?.click()}
-                    disabled={isSending}
+                    disabled={isSending || isReadOnlySession}
                   >📎</button>
                   <input
                     ref={fileInputRef}
@@ -1381,7 +1476,7 @@ export default function Chat() {
                     onChange={handleFileSelect}
                   />
 
-                  <button className="btn-send" onClick={sendMessage} disabled={(!newMessage.trim() && !pendingImage) || isSending}>
+                  <button className="btn-send" onClick={sendMessage} disabled={(!newMessage.trim() && !pendingImage) || isSending || isReadOnlySession}>
                     {isSending ? '...' : 'SEND'}
                   </button>
                 </div>
@@ -1621,15 +1716,38 @@ export default function Chat() {
         .no-sess p { opacity:0.35; font-size:10px; }
         .hint { font-size:8px; opacity:0.2; margin-top:3px; }
 
-        /* Active sessions in sidebar */
-        .active-sess-list { text-align:left; margin-top:4px; }
-        .active-sess-item {
-          padding:6px 10px; border:1px solid #1e3a5f; margin-bottom:4px;
-          cursor:pointer; transition:background 0.15s; background:#0a0a0a;
+        /* History */
+        .history-panel {
+          flex:1; min-height:0; padding:10px 14px; border-top:1px solid #111;
+          border-bottom:1px solid #1e3a5f; overflow:hidden; display:flex; flex-direction:column;
         }
-        .active-sess-item:hover { background:#111; }
-        .asi-name { font-size:9px; }
-        .asi-code { font-size:7px; opacity:0.4; font-family:monospace; }
+        .history-list { display:flex; flex-direction:column; gap:6px; overflow-y:auto; min-height:0; }
+        .history-item {
+          display:flex; align-items:stretch; gap:6px; border:1px solid #141414; background:#090909;
+          transition:border-color 0.15s, background 0.15s;
+        }
+        .history-item:hover, .history-item-active { border-color:#1e3a5f; background:#0d1016; }
+        .history-open {
+          flex:1; background:none; border:none; color:#fff; text-align:left; padding:8px 10px;
+          cursor:pointer; font-family:inherit;
+        }
+        .history-top { display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:3px; }
+        .history-name { font-size:9px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+        .history-state { font-size:6px; letter-spacing:0.8px; flex-shrink:0; opacity:0.7; }
+        .history-live { color:#6ab4ff; }
+        .history-stale { color:#ffb08a; }
+        .history-code { font-size:7px; opacity:0.35; font-family:monospace; margin-bottom:3px; }
+        .history-preview {
+          font-size:8px; opacity:0.45; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical;
+          overflow:hidden; line-height:1.4; min-height:22px;
+        }
+        .history-unread { font-size:7px; color:#6ab4ff; margin-top:4px; }
+        .history-delete {
+          background:none; border:none; border-left:1px solid #141414; color:#c86060; width:42px;
+          cursor:pointer; font-size:8px; font-family:inherit; letter-spacing:1px; transition:background 0.15s;
+        }
+        .history-delete:hover { background:rgba(200,80,80,0.12); }
+        .history-empty { font-size:8px; opacity:0.25; padding:6px 0; }
 
         /* Quick actions */
         .qa { margin-top:auto; padding:10px 14px; border-top:1px solid #1e3a5f; flex-shrink:0; }

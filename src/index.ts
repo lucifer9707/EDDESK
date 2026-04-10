@@ -574,6 +574,9 @@ app.whenReady().then(async () => {
     return await (await ensureBackendService()).joinSessionByCode(code, password)
   })
   ipcMain.handle('offline:list-conversations', async () => (await ensureBackendService()).listConversations())
+  ipcMain.handle('offline:delete-conversation', async (_event, conversationId: string) => {
+    return (await ensureBackendService()).deleteConversation(conversationId)
+  })
   ipcMain.handle('offline:get-messages', async (_event, conversationId: string) => {
     return (await ensureBackendService()).getMessages(conversationId)
   })

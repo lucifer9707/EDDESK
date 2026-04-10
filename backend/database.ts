@@ -150,6 +150,13 @@ export class BackendDatabase {
     return [...this.conversations.values()].sort((a, b) => b.updatedAt - a.updatedAt)
   }
 
+  deleteConversation(conversationId: string): void {
+    let changed = false
+    if (this.conversations.delete(conversationId)) changed = true
+    if (this.messages.delete(conversationId)) changed = true
+    if (changed) this.persist()
+  }
+
   markConversationRead(conversationId: string): void {
     const conversation = this.conversations.get(conversationId)
     if (!conversation) return
