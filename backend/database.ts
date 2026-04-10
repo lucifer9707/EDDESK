@@ -118,7 +118,6 @@ export class BackendDatabase {
       })
       conversationChanged = true
     }
-
     if (peerChanged || conversationChanged) {
       this.persist()
     }
