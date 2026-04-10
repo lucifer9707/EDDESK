@@ -325,6 +325,7 @@ export default function Chat() {
   const [pendingFile, setPendingFile] = useState<PendingFile | null>(null)
   const [joinCode, setJoinCode] = useState('')
   const [joinPassword, setJoinPassword] = useState('')
+  const [isJoining, setIsJoining] = useState(false)
   const [createName, setCreateName] = useState('')
   const [createDesc, setCreateDesc] = useState('')
   const [createVisibility, setCreateVisibility] = useState<'public' | 'private'>('public')
@@ -359,6 +360,12 @@ export default function Chat() {
     d.toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' })
   const fmtShort = (d: Date) =>
     d.toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit' })
+
+  const normalizedJoinCode = joinCode.trim().toUpperCase()
+  const selectedJoinSession = useMemo(
+    () => nearbySessions.find((session) => session.code === normalizedJoinCode) ?? null,
+    [nearbySessions, normalizedJoinCode]
+  )
 
   const addLog = useCallback((msg: string) => {
     setSessionLogs((prev) => [`[${fmt(new Date())}] ${msg}`, ...prev.slice(0, 99)])
@@ -983,6 +990,7 @@ export default function Chat() {
       const norm = code.trim().toUpperCase()
       if (!norm || norm.length < 4) { showErr('Enter a valid session code'); return }
       addLog(`Joining ${norm}...`)
+      setIsJoining(true)
       try {
         const backendSession = await offlineApi.joinSessionByCode(norm, password)
         const snap = await loadSnapshot(false)
@@ -1004,11 +1012,19 @@ export default function Chat() {
           await openSession(minSession)
         }
         setShowJoinModal(false)
+        setJoinCode('')
+        setJoinPassword('')
         addLog(`Joined ${norm}`)
       } catch (e) { showErr(`Join failed: ${getErr(e)}`); addLog(`Join failed: ${getErr(e)}`) }
+      finally { setIsJoining(false) }
     },
     [addLog, loadSnapshot, openSession, showErr]
   )
+
+  const submitJoin = useCallback(() => {
+    if (!normalizedJoinCode || isJoining) return
+    void joinByCode(normalizedJoinCode, joinPassword.trim() || undefined)
+  }, [isJoining, joinByCode, joinPassword, normalizedJoinCode])
 
   // ── Delete history entry ──────────────────────────────────────────────────
   const deleteHistory = useCallback(
@@ -1392,7 +1408,7 @@ export default function Chat() {
           <button className="qa-btn" onClick={scanForSessions} disabled={isScanning}>
             <span className="qa-badge badge-scan">LAN</span> {isScanning ? 'Scanning...' : 'Scan for Sessions'}
           </button>
-          <button className="qa-btn" onClick={() => { setJoinCode(''); setShowJoinModal(true) }}>
+          <button className="qa-btn" onClick={() => { setJoinCode(''); setJoinPassword(''); setShowJoinModal(true) }}>
             <span className="qa-badge badge-scan">↗</span> Join by Code
           </button>
           <button className={`qa-btn ${broadcastMode ? 'qa-active' : ''}`} onClick={() => setBroadcastMode((b) => !b)}>
@@ -1739,7 +1755,7 @@ export default function Chat() {
               <button className="wbtn wsecondary" onClick={scanForSessions} disabled={isScanning}>
                 {isScanning ? 'SCANNING...' : 'SCAN LAN'}
               </button>
-              <button className="wbtn wsecondary" onClick={() => { setJoinCode(''); setShowJoinModal(true) }}>
+              <button className="wbtn wsecondary" onClick={() => { setJoinCode(''); setJoinPassword(''); setShowJoinModal(true) }}>
                 ENTER CODE
               </button>
             </div>
@@ -1779,7 +1795,7 @@ export default function Chat() {
 
       {/* JOIN MODAL */}
       {showJoinModal && (
-        <div className="modal-overlay" onClick={() => setShowJoinModal(false)}>
+        <div className="modal-overlay" onClick={() => { if (!isJoining) setShowJoinModal(false) }}>
           <div className="modal-box" onClick={(e) => e.stopPropagation()}>
             <div className="modal-title">JOIN SESSION</div>
             <div className="modal-sub">
@@ -1813,27 +1829,38 @@ export default function Chat() {
                 placeholder="SESSION CODE"
                 value={joinCode}
                 onChange={(e) => setJoinCode(e.target.value.toUpperCase())}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    e.preventDefault()
+                    submitJoin()
+                  }
+                }}
                 maxLength={10}
               />
-              {nearbySessions.find((s) => s.code === joinCode)?.encrypted && (
-                <input
-                  type="password"
-                  className="code-input"
-                  style={{ letterSpacing: 'normal', fontSize: 11, textAlign: 'left' }}
-                  placeholder="PASSWORD"
-                  value={joinPassword}
-                  onChange={(e) => setJoinPassword(e.target.value)}
-                />
-              )}
+              <input
+                type="password"
+                className="code-input"
+                style={{ letterSpacing: 'normal', fontSize: 11, textAlign: 'left' }}
+                placeholder={selectedJoinSession?.encrypted ? 'PASSWORD REQUIRED' : 'PASSWORD (OPTIONAL)'}
+                value={joinPassword}
+                onChange={(e) => setJoinPassword(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    e.preventDefault()
+                    submitJoin()
+                  }
+                }}
+              />
               <button
+                type="button"
                 className="btn-join"
-                onClick={() => joinByCode(joinCode, joinPassword || undefined)}
-                disabled={!joinCode}
+                onClick={submitJoin}
+                disabled={!normalizedJoinCode || isJoining}
               >
-                JOIN
+                {isJoining ? 'JOINING...' : 'JOIN'}
               </button>
             </div>
-            <button className="modal-close" onClick={() => setShowJoinModal(false)}>×</button>
+            <button className="modal-close" onClick={() => { if (!isJoining) setShowJoinModal(false) }}>×</button>
           </div>
         </div>
       )}
