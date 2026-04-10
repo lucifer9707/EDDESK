@@ -185,6 +185,7 @@ export const offlineApi = {
   ) => window.electronAPI.offline.sendMessage(peerId, content, sessionCode, attachment) as Promise<ChatMessageRecord>,
   getAttachment: (attachmentId: string) => window.electronAPI.offline.getAttachment(attachmentId) as Promise<AttachmentRecord | undefined>,
   saveAttachmentToDisk: (attachmentId: string, suggestedName: string) => window.electronAPI.offline.saveAttachmentToDisk(attachmentId, suggestedName) as Promise<{ canceled: boolean; filePath?: string }>,
+  removeParticipant: (peerId: string) => window.electronAPI.offline.removeParticipant(peerId) as Promise<void>,
   listAssessments: () => window.electronAPI.offline.listAssessments() as Promise<AssessmentRecord[]>,
   createAssessment: (payload: {
     title: string
